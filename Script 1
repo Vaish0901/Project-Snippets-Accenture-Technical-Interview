@@ -1,0 +1,89 @@
+//ESP32-based robotic system using PWM motor control and an ultrasonic distance sensor (HC-SR04) to implement basic obstacle avoidance
+
+// Class definition for controlling a simple bidirectional motor using PWM
+class simpleMotor {
+  int PWMChannelF, PWMChannelB; // PWM channels for forward and backward control
+
+public:
+  // Setup function for motor pins and PWM channels
+  void setup(int _pinForward, int _pinBackward, int _PWMChannelF, int _PWMChannelB){
+    PWMChannelF = _PWMChannelF;
+    PWMChannelB = _PWMChannelB;
+
+    // Set up PWM channels with 60Hz frequency and 10-bit resolution
+    ledcSetup(_PWMChannelF, 60, 10);
+    ledcSetup(_PWMChannelB, 60, 10);
+
+    // Attach PWM channels to the motor driver pins
+    ledcAttachPin(_pinForward, _PWMChannelF);
+    ledcAttachPin(_pinBackward, _PWMChannelB);
+  }
+
+  // Function to set motor speed and direction
+  void setSpeed(int speed){
+    if (speed < 0){
+      speed *= -1;  // Convert to positive for PWM value
+      ledcWrite(PWMChannelF, 0);      // Stop forward movement
+      ledcWrite(PWMChannelB, speed);  // Move backward
+    }
+    else {
+      ledcWrite(PWMChannelB, 0);      // Stop backward movement
+      ledcWrite(PWMChannelF, speed);  // Move forward
+    }
+  }
+};
+
+// Create two motor instances
+simpleMotor left;
+simpleMotor right;
+
+// Define ultrasonic sensor pins
+const int pingOut = 25;  // Trigger pin
+const int pingIn = 26;   // Echo pin
+int pulse;               // Variable to store pulse duration
+
+void setup() {
+  // Initialize motor pins and PWM channels
+  left.setup(22, 23, 0, 1);    // Left motor: pins 22/23, PWM channels 0/1
+  right.setup(19, 18, 2, 3);   // Right motor: pins 19/18, PWM channels 2/3
+
+  // Set ultrasonic sensor pins
+  pinMode(pingOut, OUTPUT);
+  pinMode(pingIn, INPUT);
+
+  // Start serial communication for debugging
+  Serial.begin(115200);
+}
+
+void loop() {
+  // Send trigger pulse to ultrasonic sensor
+  digitalWrite(pingOut, LOW);
+  delayMicroseconds(2);
+  digitalWrite(pingOut, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(pingOut, LOW);
+
+  // Read echo pulse duration
+  pulse = pulseIn(pingIn, HIGH);
+  Serial.println(pulse);  // Print pulse value for debugging
+
+  // If the detected object is far enough, move forward
+  if (pulse > 2000){
+    left.setSpeed(450);   // Forward speed for left motor
+    right.setSpeed(450);  // Forward speed for right motor
+  }
+  else {
+    // If an obstacle is detected nearby:
+    // Step 1: Reverse with slight turn (right slower)
+    left.setSpeed(-400);
+    right.setSpeed(-250);
+    delay(200);
+
+    // Step 2: Sharp left turn (left motor backward, right stopped)
+    left.setSpeed(-500);
+    right.setSpeed(0);
+    delay(300);
+  }
+
+  delay(20);  // Short pause before next loop iteration
+}
