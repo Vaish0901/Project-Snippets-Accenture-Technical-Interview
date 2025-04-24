@@ -1,4 +1,4 @@
-Bidirectional PWM Motor Control
+Bidirectional PWM Motor Control (Arduino C++)
 
 // Class for controlling a bidirectional DC motor using two pins
 class motor {
