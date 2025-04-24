@@ -1,0 +1,57 @@
+Bidirectional PWM Motor Control
+
+// Class for controlling a bidirectional DC motor using two pins
+class motor {
+  public:
+    int pinA, pinB;   // Control pins for motor direction and speed
+    int speed;        // Stores the current speed setting
+
+    // Setup method to assign pin numbers
+    setup(int _pinA, int _pinB) {
+      pinA = _pinA;
+      pinB = _pinB;
+    }
+
+    // Method to set the motor speed and direction
+    setSpeed(int _speed) {
+      speed = _speed;
+      if (speed > 0) {
+        digitalWrite(pinB, LOW);        // Set direction forward
+        analogWrite(pinA, speed);       // PWM signal for speed
+      } else {
+        speed *= -1;                    // Convert negative speed to positive
+        digitalWrite(pinA, LOW);        // Set direction backward
+        analogWrite(pinB, speed);       // PWM signal for reverse speed
+      }
+    }
+};
+
+// Create two motor instances
+motor motor1;
+motor motor2;
+
+void setup() {
+  // Assign pins to motor1 
+  motor1.setup(3, 5);
+
+  // Assign pins to motor2 
+  motor2.setup(9, 10);
+}
+
+void loop() {
+  // Spin motor1 forward at speed 200
+  motor1.setSpeed(200);
+  delay(2000);  // Wait 2 seconds
+
+  // Spin motor1 backward at speed 200
+  motor1.setSpeed(-200);
+  delay(2000);  // Wait 2 seconds
+
+  // Spin motor2 forward at speed 200
+  motor2.setSpeed(200);
+  delay(2000);  // Wait 2 seconds
+
+  // Spin motor2 backward at speed 200
+  motor2.setSpeed(-200);
+  delay(2000);  // Wait 2 seconds
+}
