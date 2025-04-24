@@ -1,0 +1,244 @@
+//  Raspberry Pi-based Robot Control 
+
+import os
+
+# Hide pygame support prompt
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+
+import RPi.GPIO as rpiGPIO  # For GPIO motor control
+import time
+import cv2  # For camera and image processing
+import pygame  # For keyboard input and display
+import pigpio  # For precise PWM servo control
+import datetime  # For timestamped image capture
+
+# Optionally run headless (no display window)
+IS_HEADLESS = False
+if IS_HEADLESS:
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    pygame.display.init()
+
+# Disable GPIO warnings
+rpiGPIO.setwarnings(False)
+rpiGPIO.setmode(rpiGPIO.BCM)  # Use BCM pin numbering
+
+# Display resolution for the video feed
+DISP_RESOLUTION = (640, 480)
+
+# GPIO pins for motor H-bridge control
+MOTOR_ENA = 13
+MOTOR_ENB = 20
+MOTOR_IN1 = 19
+MOTOR_IN2 = 16
+MOTOR_IN3 = 21
+MOTOR_IN4 = 26
+
+# GPIO pins for robotic arm servos
+SERVO_ARM_POS = 7
+SERVO_ARM_CLAW_PAN = 5
+SERVO_ARM_CLAW_ROLL = 6
+SERVO_ARM_CLAW = 12
+
+# GPIO pins for camera servos
+SERVO_CAM_TILT = 11
+SERVO_CAM_PAN = 8
+
+# Default motor speeds (can be adjusted for balance)
+DEFAULT_LEFT_SPEED = 94
+DEFAULT_RIGHT_SPEED = 80
+
+# Default adjustment values for servo control
+ARM_POS_ADJUST = 50
+ARM_CLAW_PAN_ADJUST = 50
+ARM_CLAW_ROLL_ADJUST = 50
+ARM_CLAW_ADJUST = 50
+CAM_TILT_ADJUST = 50
+CAM_PAN_ADJUST = 50
+
+# Motor direction constants
+TRACK_FORWARD = (False, True)
+TRACK_BACKWARD = (True, False)
+
+# Initialize motor GPIOs
+for pin in [MOTOR_ENA, MOTOR_ENB, MOTOR_IN1, MOTOR_IN2, MOTOR_IN3, MOTOR_IN4]:
+    rpiGPIO.setup(pin, rpiGPIO.OUT, initial=rpiGPIO.LOW)
+
+# Initialize PWM for motors
+rightTrackPWM = rpiGPIO.PWM(MOTOR_ENA, 1000)
+leftTrackPWM = rpiGPIO.PWM(MOTOR_ENB, 1000)
+
+# Initialize pigpio for servo control
+SERVO_PWM = pigpio.pi()
+
+# Set up servo pins with pigpio
+for x in [SERVO_CAM_TILT, SERVO_CAM_PAN, SERVO_ARM_POS, SERVO_ARM_CLAW_PAN, SERVO_ARM_CLAW_ROLL, SERVO_ARM_CLAW]:
+    SERVO_PWM.set_mode(x, pigpio.OUTPUT)
+    SERVO_PWM.set_PWM_frequency(x, 50)
+
+# Servo control class with adjustable limits and step sizes
+class Servo:
+    def __init__(self, min_range, max_range, default_pos, pin_alloc, servo_rate):
+        self.min_range = min_range
+        self.max_range = max_range
+        self.default_pos = default_pos
+        self.position = self.default_pos
+        self.pin_alloc = pin_alloc
+        self.servo_rate = servo_rate
+
+    def servo_control(self, dir):
+        adjustment = self.servo_rate * dir
+        new_position = self.position + adjustment
+        if self.min_range <= new_position <= self.max_range:
+            self.position = new_position
+            SERVO_PWM.set_servo_pulsewidth(self.pin_alloc, new_position)
+
+# Set motor directions (forward/backward)
+def set_motor_states(lefttrackdir, righttrackdir):
+    rpiGPIO.output(MOTOR_ENA, True)
+    rpiGPIO.output(MOTOR_ENB, True)
+    rpiGPIO.output(MOTOR_IN1, righttrackdir[0])
+    rpiGPIO.output(MOTOR_IN2, righttrackdir[1])
+    rpiGPIO.output(MOTOR_IN3, lefttrackdir[0])
+    rpiGPIO.output(MOTOR_IN4, lefttrackdir[1])
+
+# Stop all motors
+def stop():
+    set_motor_states((False, False), (False, False))
+
+# Set track speed to fast or default
+def make_tracks_fast(fast):
+    duty_cycle_right = 100 if fast else DEFAULT_RIGHT_SPEED
+    duty_cycle_left = 100 if fast else DEFAULT_LEFT_SPEED
+    rightTrackPWM.ChangeDutyCycle(duty_cycle_right)
+    leftTrackPWM.ChangeDutyCycle(duty_cycle_left)
+
+# Clean up everything safely on exit
+def prog_exit():
+    stop()
+    rpiGPIO.output(MOTOR_ENA, False)
+    rpiGPIO.output(MOTOR_ENB, False)
+    rightTrackPWM.ChangeDutyCycle(0)
+    leftTrackPWM.ChangeDutyCycle(0)
+    rightTrackPWM.stop()
+    leftTrackPWM.stop()
+
+    # Stop all servos
+    for x in [SERVO_CAM_TILT, SERVO_CAM_PAN, SERVO_ARM_POS, SERVO_ARM_CLAW_PAN, SERVO_ARM_CLAW_ROLL, SERVO_ARM_CLAW]:
+        SERVO_PWM.set_servo_pulsewidth(x, 0)
+
+    SERVO_PWM.stop()
+    camera.release()
+    rpiGPIO.cleanup()
+    raise SystemExit
+
+# Capture and save a camera image
+def cam_capture():
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    directory = os.path.join(current_dir, "camCap")
+    file_path = f"{directory}/img_cap_{timestamp}.jpg"
+    image = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    cv2.imshow(timestamp, image)
+    cv2.waitKey(0)
+    cv2.imwrite(file_path, image)
+    print(f"Image {timestamp} saved")
+
+# Handle key presses
+def handle_keydown(event):
+    if event.key == pygame.K_ESCAPE:
+        prog_exit()
+    elif event.key == pygame.K_LSHIFT:
+        make_tracks_fast(True)
+    elif event.key == pygame.K_i:
+        cam_capture()
+    else:
+        stop()
+
+# Handle key releases
+def handle_keyup(event):
+    if event.key == pygame.K_LSHIFT:
+        make_tracks_fast(False)
+    stop()
+
+# Set all servos to their default positions
+def set_servo_default():
+    for x in [camTiltPos, camPanPos, armPos, armClawPanPos, armClawRollPos, armClawPos]:
+        SERVO_PWM.set_servo_pulsewidth(x.pin_alloc, x.default_pos)
+        time.sleep(1)
+
+# Main program
+if __name__ == "__main__":
+
+    # Key bindings for controlling robot
+    key_actions = {
+        pygame.K_w: lambda: set_motor_states(TRACK_FORWARD, TRACK_FORWARD),
+        pygame.K_a: lambda: set_motor_states(TRACK_BACKWARD, TRACK_FORWARD),
+        pygame.K_s: lambda: set_motor_states(TRACK_BACKWARD, TRACK_BACKWARD),
+        pygame.K_d: lambda: set_motor_states(TRACK_FORWARD, TRACK_BACKWARD),
+
+        pygame.K_UP: lambda: camTiltPos.servo_control(1),
+        pygame.K_LEFT: lambda: camPanPos.servo_control(1),
+        pygame.K_DOWN: lambda: camTiltPos.servo_control(-1),
+        pygame.K_RIGHT: lambda: camPanPos.servo_control(-1),
+
+        pygame.K_EQUALS: lambda: armClawPos.servo_control(1),
+        pygame.K_MINUS: lambda: armClawPos.servo_control(-1),
+
+        pygame.K_LEFTBRACKET: lambda: armClawRollPos.servo_control(1),
+        pygame.K_RIGHTBRACKET: lambda: armClawRollPos.servo_control(-1),
+
+        pygame.K_SEMICOLON: lambda: armClawPanPos.servo_control(1),
+        pygame.K_QUOTE: lambda: armClawPanPos.servo_control(-1),
+
+        pygame.K_COMMA: lambda: armPos.servo_control(1),
+        pygame.K_PERIOD: lambda: armPos.servo_control(-1)
+    }
+
+    # Start camera and pygame display
+    camera = cv2.VideoCapture(0)
+    pygame.init()
+    screen = pygame.display.set_mode(DISP_RESOLUTION)
+
+    # Start motors with default speed
+    rightTrackPWM.start(DEFAULT_RIGHT_SPEED)
+    leftTrackPWM.start(DEFAULT_LEFT_SPEED)
+
+    # Initialize servos
+    camTiltPos = Servo(600, 1800, 1000, SERVO_CAM_TILT, CAM_TILT_ADJUST)
+    camPanPos = Servo(500, 2500, 1600, SERVO_CAM_PAN, CAM_PAN_ADJUST)
+    armPos = Servo(800, 2500, 2500, SERVO_ARM_POS, ARM_POS_ADJUST)
+    armClawPanPos = Servo(1000, 2500, 1000, SERVO_ARM_CLAW_PAN, ARM_CLAW_PAN_ADJUST)
+    armClawRollPos = Servo(500, 2500, 1500, SERVO_ARM_CLAW_ROLL, ARM_CLAW_ROLL_ADJUST)
+    armClawPos = Servo(800, 1500, 800, SERVO_ARM_CLAW, ARM_CLAW_ADJUST)
+
+    # Move servos to default starting positions
+    set_servo_default()
+
+    try:
+        while True:
+            # Read camera frame
+            ret, frame = camera.read()
+
+            # Prepare frame for display
+            screen.fill([0, 0, 0])
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = frame.swapaxes(0, 1)
+            pygame.surfarray.blit_array(screen, frame)
+            pygame.display.update()
+
+            # Handle pygame events
+            for event in pygame.event.get():
+                if event.type == pygame.KEYDOWN:
+                    handle_keydown(event)
+                elif event.type == pygame.KEYUP:
+                    handle_keyup(event)
+
+            # Continuous key press actions
+            keys_pressed = pygame.key.get_pressed()
+            for key, action in key_actions.items():
+                if keys_pressed[key]:
+                    action()
+
+    except (KeyboardInterrupt, SystemExit):
+        pygame.quit()
+        cv2.destroyAllWindows()
