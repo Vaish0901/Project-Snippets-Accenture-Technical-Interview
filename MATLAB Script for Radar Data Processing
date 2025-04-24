@@ -1,0 +1,140 @@
+MATLAB Script for Radar Data Processing
+
+% Description:
+%   This MATLAB script processes raw ADC data (recorded as I,0,I,0,...) to 
+%   generate a range-Doppler map and a range profile that closely matches 
+%   the output of TI's mmWave Studio. The script:
+%     - Converts radar parameters from engineering units to SI.
+%     - Derives parameters such as PRF, wavelength, bandwidth, and range 
+%       resolution.
+%     - Computes the range and Doppler axes based on the ADC sampling rate,
+%       number of ADC samples, and chirp parameters.
+%     - Reads ADC data from a binary file ('adc_data.bin').
+%     - Applies a Kaiser window to the data in the range dimension for smoothing things out.
+%     - Performs a 1D FFT (range processing) and a 2D FFT (Doppler processing).
+%     - Normalises the FFT magnitudes to dBFS using the ADC full-scale value 
+%       and the window's coherent gain.
+%     - Plots both the Range-Doppler map and the Range Profile.
+%
+% Usage:
+%   - Set the radar parameters as needed.
+%   - Ensure that 'adc_data.bin' is in the current working directory.
+%   - Run the script.
+%==========================================================================
+
+clc; clear; close all;
+
+%% ---------------- Radar Parameters  --------------
+start_freq0    = 77;       % GHz
+slope0         = 29.982;       % MHz/us
+idle_time0     = 100;      % us
+ramp_end_time0 = 60;       % us
+sampling_rate0 = 10000;    % ksps => 10 Msps
+adc_samples0   = 256;      % per chirp
+numChirps      = 128;      
+c              = 3e8;      % speed of light
+numFrames      = 100;
+%% 1) Convert units to SI
+startFreq_Hz  = start_freq0 * 1e9;         % 77 GHz => 77e9 Hz
+freqSlope_HzS = slope0 * 1e12;             % 60 MHz/us => 60e12 Hz/s
+idleTime_s    = idle_time0 * 1e-6;           % 100 us => 1e-4 s
+rampEndTime_s = ramp_end_time0 * 1e-6;         % 60 us => 6e-5 s
+fs_Hz         = sampling_rate0 * 1e3;        % 10000 ksps => 10e6 Hz
+
+fprintf('--- Converted Parameters ---\n');
+fprintf('Start frequency: %.2f GHz\n', start_freq0);
+fprintf('Slope: %.2f MHz/us = %.2e Hz/s\n', slope0, freqSlope_HzS);
+fprintf('Idle time: %.2f us = %.2e s\n', idle_time0, idleTime_s);
+fprintf('Ramp end time: %.2f us = %.2e s\n', ramp_end_time0, rampEndTime_s);
+fprintf('ADC sample rate: %.2f Msps = %.2e Hz\n', sampling_rate0/1e3, fs_Hz);
+fprintf('ADC samples per chirp: %d\n', adc_samples0);
+
+%% 2) Derived parameters
+totalChirpTime = rampEndTime_s + idleTime_s;    % Total chirp time (s)
+PRF            = 1 / totalChirpTime;             % Pulse Repetition Frequency
+lambda         = c / startFreq_Hz;               % Wavelength (m)
+BW             = freqSlope_HzS * rampEndTime_s;    % Bandwidth (Hz)
+rangeRes       = c / (2 * BW);                   % Range resolution (m)
+
+% For real-only mode, keep half the ADC samples, otherwise it will mirror:
+numAdcSamples = adc_samples0;                    
+maxRangeBins  = numAdcSamples / 2;
+
+%% Range Axis Calculation 
+df = fs_Hz / numAdcSamples;  
+k = 0:(maxRangeBins-1);
+rangeAxis = (c * (k * df)) / (2 * freqSlope_HzS);
+
+%% Doppler (Velocity) Axis Calculation 
+T_chirp = totalChirpTime;  % seconds per chirp
+doppler_freq = (-numChirps/2 : numChirps/2 - 1) / (numChirps * T_chirp);
+velocityAxis = (lambda / 2) * doppler_freq;
+
+fprintf('\n--- Derived Values ---\n');
+fprintf('Total Chirp Time: %.2e s => PRF = %.1f Hz\n', totalChirpTime, PRF);
+fprintf('Lambda = %.4e m\n', lambda);
+fprintf('Bandwidth = %.2e Hz\n', BW);
+fprintf('Range Resolution = %.3f m\n', rangeRes);
+fprintf('Max Range ~ %4.1f m\n', rangeAxis(end));
+fprintf('Max Unambiguous Velocity = +/- %.2f m/s\n\n', max(abs(velocityAxis)));
+
+%% ---------------- Read raw ADC data (real-only, 1 Rx) ----------------
+rawFile = 'Test3_twoobjects_one_metre.bin';
+fid = fopen(rawFile, 'r');
+rawData = fread(fid, 'int16');
+fclose(fid);
+
+% For real-only mode, data is arranged as [I, Q(=0)] -> 2 int16 per sample
+expectedSize = 2 * numAdcSamples * numChirps*numFrames;
+if length(rawData) ~= expectedSize
+    error('File size mismatch: got %d int16, expected %d.', length(rawData), expectedSize);
+end
+
+% Extract I values (taking every other sample) as there is only real data 
+Ivals = rawData(1:2:end);
+% Reshape to [fast-time x slow-time] (rows: ADC samples, columns: chirps)
+Ivals = reshape(Ivals, numAdcSamples, numChirps,numFrames);
+
+%% ---------------- Apply Kaiser window in range dimension ----------------
+windowRange = kaiser(numAdcSamples, 12);
+Ivals = Ivals .* repmat(windowRange, 1, numChirps);
+
+%% ---------------- 1D FFT across range (fast-time) ----------------
+rangeFFT = fft(Ivals, numAdcSamples, 1);
+% Keep only the positive frequency half (as in mmWave Studio)
+rangeFFT = rangeFFT(1:maxRangeBins, :);
+
+%% ---------------- 2D FFT across Doppler (slow-time) ----------------
+RD = fftshift(fft(rangeFFT, numChirps, 2), 2);
+
+% Normalisation: account for the Kaiser window’s coherent gain
+windowSum = sum(windowRange);
+
+%% dBFS scaling
+
+FS_val = 32767;
+RD_mag = abs(RD) + eps;
+RD_dB = 20 * log10(RD_mag / (FS_val * windowSum) + 1e-6);
+
+%% Plot Range-Doppler Map
+figure('Name','Range-Doppler');
+imagesc(velocityAxis, rangeAxis, RD_dB);
+axis xy; colormap jet; colorbar;
+xlabel('Velocity (m/s)');
+ylabel('Range (m)');
+title('Range-Doppler Map');
+
+%  
+
+
+%% ---------------- Range Profile  ----------------
+rangeMag = mean(abs(rangeFFT), 2);
+rangeMag_dB = 20 * log10(rangeMag / (FS_val * windowSum) + 1e-6);
+
+figure('Name','Range Profile');
+plot(rangeAxis, rangeMag_dB, 'LineWidth', 1.5);
+xlabel('Range (m)');
+ylabel('Amplitude (dB)');
+title('Range Profile');
+grid on;
+
