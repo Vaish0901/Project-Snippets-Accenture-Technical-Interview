@@ -1,4 +1,6 @@
 //ESP32-based robotic system using PWM motor control and an ultrasonic distance sensor (HC-SR04) to implement basic obstacle avoidance
+// This code is written in Arduino C++
+
 
 // Class definition for controlling a simple bidirectional motor using PWM
 class simpleMotor {
