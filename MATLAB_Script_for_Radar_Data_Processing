@@ -22,6 +22,8 @@ MATLAB Script for Radar Data Processing
 %   - Run the script.
 %==========================================================================
 
+% This is a test
+
 clc; clear; close all;
 
 %% ---------------- Radar Parameters  --------------
